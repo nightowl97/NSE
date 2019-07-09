@@ -1,10 +1,11 @@
 import scipy as sc
-from scipy.constants import constants
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
-from scipy.linalg import toeplitz
 from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import eigs
+import scipy.sparse.linalg as la
+from scipy import sparse
 import os
 
 """
@@ -18,50 +19,66 @@ Boundary conditions (Dirichlet) :   Ψ(0, t) = 0
 Potential field                 :   V = 0 everywhere
 """
 
-# mass
-m = 9e-30
-hbar = constants.hbar
+# TODO: Fix boundary conditions
 
 # Spatial discretisation
-N = 1000
+N = 500
 x = np.linspace(0, 1, N)
 dx = x[1] - x[0]
 
 
 # Time discretisation
 K = 300
-t = np.linspace(0, 1, K)
+t = np.linspace(0, .003, K)
 dt = t[1] - t[0]
 
-alpha = (1j * hbar * dt) / (2 * m * (dx**2))
+alpha = 1j * dt / (2 * (dx ** 2))
 print(alpha)
-A = toeplitz([2 + 2 * alpha, - alpha, *np.zeros(N-4)])  # 2 less for both boundaries
-B = toeplitz([2 - 2 * alpha, alpha, *np.zeros(N-4)])
+
+A = sparse.diags([(N - 3)*[-alpha], (N - 2) * [1 + 2 * alpha], (N - 3) * [-alpha]], [-1, 0, 1], format="csc")
+B = sparse.diags([(N - 3)*[ alpha], (N - 2) * [1 - 2 * alpha], (N - 3) * [ alpha]], [-1, 0, 1], format="csc")
+
+# Check for matrix singularity
+if not np.isfinite(np.linalg.cond(np.linalg.inv(A.todense()).dot(B.todense()))):
+    print("Matrix is singular, aborting..")
+    exit(0)
+
+eigenvalues = np.abs(la.eigsh(sparse.linalg.inv(A) * B)[0])
+if np.abs(1 - max(eigenvalues)) <= 1e-2:
+    print("Looks stable.\nCalculating")
+else:
+    print("Propagator matrix maximum eigenvalue is:\t {}".format(max(eigenvalues)))
+    exit(0)
+
 
 # Initial and boundary conditions
-psi = np.multiply(np.exp(1j * 50 * (x - .5)), np.exp(- 200 * (x - .5) ** 2)) # [:, None]  # new axis)
-rhs = B.dot(psi[1:-1])
+psi = np.exp((1j * 1000 * x) - (2000 * (x - .25) ** 2))  # [:, None]  # new axis)
+b = B.dot(psi[1:-1])
+psi[0], psi[-1] = 0, 0
 
 # Time propagation
-frames = np.zeros([K, N], dtype=complex)
+frames = np.zeros([K, N])
 for index, step in enumerate(t):
     # Within the domain
-    # new_space = np.zeros(N)
-    # new_space[1:-1] = psi[1:-1] - alpha * (psi[:-2] - 2 * psi[1:-1] + psi[2:])
+    psi[1:-1] = spsolve(A, b)
 
-    psi[1:-1] = spsolve(A, rhs)
     # Enforce boundaries
     # psi[0], psi[N - 1] = 0, 0
 
-    rhs = B.dot(psi[1:-1])
-    frames[index] = np.square(psi)
+    b = B.dot(psi[1:-1])
 
+    frames[index] = np.abs(psi) ** 2
 
+    # print(np.trapz(np.abs(psi) ** 2)) # Check unitarity
+
+print("Solution calculated.")
 # Animation
 fig = plt.figure()
 ax = plt.axes(xlim=(0, 1), ylim=(-2, 2))
 line, = ax.plot([], [], lw=2)
 plt.grid()
+plt.title('Time Dependent Schrodinger Equation (TDSE): Re(Ψ(x, t))')
+plt.xlabel('X-axis')
 
 
 # initialization function: plot the background of each frame
@@ -71,13 +88,14 @@ def init():
 
 
 def animate(i):
-    # Complex warning because imaginary is null but still exists
     line.set_data(x, frames[i])
     return line,
 
 
+print("Animating..")
+
 anim = animation.FuncAnimation(fig, animate, init_func=init,
-                               frames=200, interval=20, blit=True)
-anim.save('basic_animation.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+                               frames=K, interval=20, blit=True)
+anim.save('basic_animation.mp4', fps=60, extra_args=['-vcodec', 'libx264'])
 
 os.system("xdg-open basic_animation.mp4")
